@@ -69,11 +69,6 @@ type SlackMessage struct {
 	Blocks []Block `json:"blocks"`
 }
 
-type SlackRequest struct {
-	ResponseURL string `json:"response_url"`
-	Text        string `json:"text"`
-}
-
 func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
