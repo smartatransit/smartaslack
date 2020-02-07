@@ -1,15 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"time"
 
 	marta "github.com/CatOrganization/gomarta"
 	flags "github.com/jessevdk/go-flags"
@@ -18,9 +14,7 @@ import (
 )
 
 type options struct {
-	MartaAPIKey       string `long:"marta-api-key" env:"MARTA_API_KEY" description:"marta api key" required:"true"`
-	PollTimeInSeconds int    `long:"poll-time-in-seconds" env:"POLL_TIME_IN_SECONDS" description:"time to poll marta api every second" required:"true"`
-	WebhookURL        string `long:"webhook-url" env:"WEBHOOK_URL" description:"slack webhook url" required:"true"`
+	MartaAPIKey string `long:"marta-api-key" env:"MARTA_API_KEY" description:"marta api key" required:"true"`
 
 	Debug bool `long:"debug" env:"DEBUG" description:"enabled debug logging"`
 }
@@ -43,65 +37,102 @@ func main() {
 		_ = logger.Sync() // flushes buffer, if any
 	}()
 
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt)
-
 	martaC := marta.NewDefaultClient(opts.MartaAPIKey)
+	mux := buildMux(martaC)
 
-	httpC := &http.Client{}
-	pollTime := time.Duration(opts.PollTimeInSeconds) * time.Second
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			log.Print("getting trains")
-			trains, err := martaC.GetTrains()
-			if err != nil {
-				log.Print(err.Error())
-				continue
-			}
-			for _, train := range trains {
-				if train.WaitingTime == "Boarding" {
-					log.Print("train is boarding")
-					err = SendSlackMessage(ctx, httpC, opts.WebhookURL, train)
-					if err != nil {
-						log.Print(err.Error())
-					}
-				}
-			}
-
-			time.Sleep(pollTime)
-		}
-	}()
-
-	select {
-	case <-quit:
-		cancel()
-		logger.Info("interrupt signal received")
-		logger.Info("shutting down...")
-	}
+	err = http.ListenAndServe(":3000", mux)
+	log.Fatal(err)
 }
 
-type SlackMessage struct {
+func buildMux(martaC *marta.Client) *http.ServeMux {
+	mux := http.NewServeMux()
+	fah := &findArrivalHandler{martaC}
+	mux.Handle("/find-arrival", fah)
+	return mux
+}
+
+type findArrivalHandler struct {
+	martaC *marta.Client
+}
+
+type Text struct {
+	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
-func SendSlackMessage(ctx context.Context, httpC *http.Client, webhookURL string, train marta.Train) error {
-	b, err := json.Marshal(SlackMessage{fmt.Sprint(train.Station, " ", train.Direction, " is now boarding")})
+type Block struct {
+	Type string `json:"type"`
+	Text Text   `json:"text"`
+}
+
+type SlackMessage struct {
+	Blocks []Block `json:"blocks"`
+}
+
+type SlackRequest struct {
+	ResponseURL string `json:"response_url"`
+	Text        string `json:"text"`
+}
+
+func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	log.Print("sending message " + webhookURL)
-	log.Print(fmt.Sprintf("%s", b))
-	resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(b))
-	log.Print(fmt.Sprintf("%s", resp.Body))
-	return err
+
+	req := SlackRequest{}
+	err = json.Unmarshal(body, &req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	trains, err := th.martaC.GetTrains()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	filteredTrains := filterTrainsByStation(trains, req.Text)
+	w.Header().Add("Content-Type", "application/json")
+	blocks := buildSlackMessage(filteredTrains)
+	b, err := json.Marshal(&blocks)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, err = w.Write(b)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	return
+}
+
+func filterTrainsByStation(trains []marta.Train, station string) (filtered []marta.Train) {
+	for _, train := range trains {
+		if train.Station == station {
+			filtered = append(filtered, train)
+		}
+	}
+	return
+}
+
+func buildSlackMessage(trains []marta.Train) (msg SlackMessage) {
+	for _, train := range trains {
+		msg.Blocks = append(msg.Blocks, buildBlock(train))
+	}
+	return
+}
+
+func buildBlock(train marta.Train) (block Block) {
+	return Block{
+		Type: "section",
+		Text: Text{
+			Type: "mrkdwn",
+			Text: fmt.Sprintf("*%s*\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
+		},
+	}
+	return
 }
