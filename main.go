@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 
@@ -38,21 +37,22 @@ func main() {
 	}()
 
 	martaC := marta.NewDefaultClient(opts.MartaAPIKey)
-	mux := buildMux(martaC)
+	mux := buildMux(martaC, logger)
 
 	err = http.ListenAndServe(":3000", mux)
 	log.Fatal(err)
 }
 
-func buildMux(martaC *marta.Client) *http.ServeMux {
+func buildMux(martaC *marta.Client, logger *zap.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
-	fah := &findArrivalHandler{martaC}
+	fah := &findArrivalHandler{martaC, logger}
 	mux.Handle("/find-arrival", fah)
 	return mux
 }
 
 type findArrivalHandler struct {
 	martaC *marta.Client
+	logger *zap.Logger
 }
 
 type Text struct {
@@ -75,26 +75,19 @@ type SlackRequest struct {
 }
 
 func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := ioutil.ReadAll(r.Body)
+	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	req := SlackRequest{}
-	err = json.Unmarshal(body, &req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	trains, err := th.martaC.GetTrains()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	filteredTrains := filterTrainsByStation(trains, req.Text)
+	th.logger.Info(fmt.Sprintf("%v", r.Form))
+	filteredTrains := filterTrainsByStation(trains, r.FormValue("text"))
 	w.Header().Add("Content-Type", "application/json")
 	blocks := buildSlackMessage(filteredTrains)
 	b, err := json.Marshal(&blocks)
