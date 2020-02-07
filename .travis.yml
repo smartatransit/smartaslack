@@ -1,0 +1,35 @@
+dist: xenial
+
+language: go
+
+env:
+  - GO111MODULE=on
+
+go:
+  - 1.12.x
+
+git:
+  depth: 1
+
+install: true
+
+notifications:
+  email: false
+
+before_script:
+  - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | bash -s -- -b $GOPATH/bin v1.12.5
+  - golangci-lint run --config=.golangci-lint.yaml # run a bunch of code checkers/linters in parallel
+
+script:
+  - docker login -u $DOCKER_USER -p $DOCKER_PASS
+  - export TAG=`if [ "$TRAVIS_BRANCH" == "master" ]; then echo "latest"; else echo "staging" ; fi`
+
+  - GOOS=linux go build
+  - export docker_repo=smartatransit/smartaslack
+  - export docker_build_directory=.
+  - export tags="build-${TRAVIS_BUILD_NUMBER},commit-${TRAVIS_COMMIT::8},$TAG"
+  - ./build_and_push_image.sh
+
+after_success:
+  - touch coverage.txt; find . -name "*.coverprofile" | xargs -l cat >> coverage.txt
+  - curl -s https://codecov.io/bash | bash -
