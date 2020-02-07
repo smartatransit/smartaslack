@@ -105,9 +105,7 @@ func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	_, err = w.Write(b)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	return
 }
 
 func filterTrainsByStation(trains []marta.Train, station string) (filtered []marta.Train) {
@@ -134,5 +132,4 @@ func buildBlock(train marta.Train) (block Block) {
 			Text: fmt.Sprintf("*%s*\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
 		},
 	}
-	return
 }
