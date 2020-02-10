@@ -60,17 +60,24 @@ type SlackVerifier struct {
 	logger  *zap.Logger
 }
 
-func (sv SlackVerifier) generateSignature(body string, timestamp string) string {
+func (sv SlackVerifier) generateSignature(body string, timestamp string) (string, error) {
 	sig_basestring := fmt.Sprintf("%s:%s:%s", sv.version, timestamp, body)
 	sv.logger.Info(sig_basestring)
 	h := hmac.New(sha256.New, []byte(sv.secret))
-	h.Write([]byte(sig_basestring))
+	_, err := h.Write([]byte(sig_basestring))
+	if err != nil {
+		return "", err
+	}
 	sha := hex.EncodeToString(h.Sum(nil))
-	return fmt.Sprintf("%s=%s", sv.version, sha)
+	return fmt.Sprintf("%s=%s", sv.version, sha), nil
 }
 
 func (sv SlackVerifier) isValid(body, timestamp, signature string) bool {
-	sig := sv.generateSignature(body, timestamp)
+	sig, err := sv.generateSignature(body, timestamp)
+	if err != nil {
+		sv.logger.Error(err.Error())
+		return false
+	}
 	sv.logger.Info(sig)
 	return sig == signature
 }
