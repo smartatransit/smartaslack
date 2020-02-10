@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 
@@ -13,7 +17,8 @@ import (
 )
 
 type options struct {
-	MartaAPIKey string `long:"marta-api-key" env:"MARTA_API_KEY" description:"marta api key" required:"true"`
+	MartaAPIKey     string `long:"marta-api-key" env:"MARTA_API_KEY" description:"marta api key" required:"true"`
+	SlackSigningKey string `long:"slack-signing-key" env:"SLACK_SIGNING_KEY" description:"slack signing key" required:"true"`
 
 	Debug bool `long:"debug" env:"DEBUG" description:"enabled debug logging"`
 }
@@ -35,24 +40,45 @@ func main() {
 	defer func() {
 		_ = logger.Sync() // flushes buffer, if any
 	}()
-
+	sv := SlackVerifier{
+		opts.SlackSigningKey,
+		"v0",
+		logger,
+	}
 	martaC := marta.NewDefaultClient(opts.MartaAPIKey)
-	mux := buildMux(martaC, logger)
+	mux := http.NewServeMux()
+	fah := &findArrivalHandler{martaC, logger, sv}
+	mux.Handle("/find-arrival", fah)
 
 	err = http.ListenAndServe(":3000", mux)
 	log.Fatal(err)
 }
 
-func buildMux(martaC *marta.Client, logger *zap.Logger) *http.ServeMux {
-	mux := http.NewServeMux()
-	fah := &findArrivalHandler{martaC, logger}
-	mux.Handle("/find-arrival", fah)
-	return mux
+type SlackVerifier struct {
+	secret  string
+	version string
+	logger  *zap.Logger
+}
+
+func (sv SlackVerifier) generateSignature(body string, timestamp string) string {
+	sig_basestring := fmt.Sprintf("%s:%s:%s", sv.version, timestamp, body)
+	sv.logger.Info(sig_basestring)
+	h := hmac.New(sha256.New, []byte(sv.secret))
+	h.Write([]byte(sig_basestring))
+	sha := hex.EncodeToString(h.Sum(nil))
+	return fmt.Sprintf("%s=%s", sv.version, sha)
+}
+
+func (sv SlackVerifier) isValid(body, timestamp, signature string) bool {
+	sig := sv.generateSignature(body, timestamp)
+	sv.logger.Info(sig)
+	return sig == signature
 }
 
 type findArrivalHandler struct {
 	martaC *marta.Client
 	logger *zap.Logger
+	sv     SlackVerifier
 }
 
 type Text struct {
@@ -70,9 +96,22 @@ type SlackMessage struct {
 }
 
 func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseForm()
+	rawURL, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	err = r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	validatedSignature := th.sv.isValid(
+		fmt.Sprintf("%s", rawURL),
+		r.Header.Get("X-Slack-Request-Timestamp"),
+		r.Header.Get("X-Slack-Signature"),
+	)
+	if !validatedSignature {
 		return
 	}
 	trains, err := th.martaC.GetTrains()
