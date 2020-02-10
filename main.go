@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -47,7 +48,7 @@ func main() {
 	}
 	martaC := marta.NewDefaultClient(opts.MartaAPIKey)
 	mux := http.NewServeMux()
-	fah := &findArrivalHandler{martaC, logger, sv}
+	fah := &findArrivalHandler{martaC, logger, sv, opts.Debug}
 	mux.Handle("/find-arrival", fah)
 
 	err = http.ListenAndServe(":3000", mux)
@@ -62,7 +63,7 @@ type SlackVerifier struct {
 
 func (sv SlackVerifier) generateSignature(body string, timestamp string) (string, error) {
 	sig_basestring := fmt.Sprintf("%s:%s:%s", sv.version, timestamp, body)
-	sv.logger.Info(sig_basestring)
+	sv.logger.Debug(sig_basestring)
 	h := hmac.New(sha256.New, []byte(sv.secret))
 	_, err := h.Write([]byte(sig_basestring))
 	if err != nil {
@@ -78,7 +79,8 @@ func (sv SlackVerifier) isValid(body, timestamp, signature string) bool {
 		sv.logger.Error(err.Error())
 		return false
 	}
-	sv.logger.Info(sig)
+	sv.logger.Debug(fmt.Sprintf("slack signature %s", signature))
+	sv.logger.Debug(fmt.Sprintf("generated signature %s", sig))
 	return sig == signature
 }
 
@@ -86,6 +88,7 @@ type findArrivalHandler struct {
 	martaC *marta.Client
 	logger *zap.Logger
 	sv     SlackVerifier
+	debug  bool
 }
 
 type Text struct {
@@ -104,6 +107,7 @@ type SlackMessage struct {
 
 func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rawURL, err := ioutil.ReadAll(r.Body)
+	r.Body = ioutil.NopCloser(bytes.NewBuffer(rawURL))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -113,13 +117,15 @@ func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	validatedSignature := th.sv.isValid(
-		fmt.Sprintf("%s", rawURL),
-		r.Header.Get("X-Slack-Request-Timestamp"),
-		r.Header.Get("X-Slack-Signature"),
-	)
-	if !validatedSignature {
-		return
+	if !th.debug {
+		validatedSignature := th.sv.isValid(
+			fmt.Sprintf("%s", rawURL),
+			r.Header.Get("X-Slack-Request-Timestamp"),
+			r.Header.Get("X-Slack-Signature"),
+		)
+		if !validatedSignature {
+			return
+		}
 	}
 	trains, err := th.martaC.GetTrains()
 	if err != nil {
@@ -127,9 +133,13 @@ func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	th.logger.Info(fmt.Sprintf("%v", r.Form))
+	th.logger.Debug(fmt.Sprintf("%v", r.Form))
 	filteredTrains := filterTrainsByStation(trains, r.FormValue("text"))
 	w.Header().Add("Content-Type", "application/json")
+	if len(filteredTrains) == 0 {
+		http.Error(w, "No trains found with that station name", http.StatusNotFound)
+		return
+	}
 	blocks := buildSlackMessage(filteredTrains)
 	b, err := json.Marshal(&blocks)
 	if err != nil {
