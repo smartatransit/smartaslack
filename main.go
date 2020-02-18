@@ -2,14 +2,12 @@ package main
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"smartatransit/smartaslack/pkg/slack"
 
 	marta "github.com/CatOrganization/gomarta"
 	flags "github.com/jessevdk/go-flags"
@@ -41,10 +39,10 @@ func main() {
 	defer func() {
 		_ = logger.Sync() // flushes buffer, if any
 	}()
-	sv := SlackVerifier{
-		opts.SlackSigningKey,
-		"v0",
-		logger,
+	sv := slack.Verifier{
+		Secret:  opts.SlackSigningKey,
+		Version: "v0",
+		Logger:  logger,
 	}
 	martaC := marta.NewDefaultClient(opts.MartaAPIKey)
 	mux := http.NewServeMux()
@@ -55,39 +53,10 @@ func main() {
 	log.Fatal(err)
 }
 
-type SlackVerifier struct {
-	secret  string
-	version string
-	logger  *zap.Logger
-}
-
-func (sv SlackVerifier) generateSignature(body string, timestamp string) (string, error) {
-	sig_basestring := fmt.Sprintf("%s:%s:%s", sv.version, timestamp, body)
-	sv.logger.Debug(sig_basestring)
-	h := hmac.New(sha256.New, []byte(sv.secret))
-	_, err := h.Write([]byte(sig_basestring))
-	if err != nil {
-		return "", err
-	}
-	sha := hex.EncodeToString(h.Sum(nil))
-	return fmt.Sprintf("%s=%s", sv.version, sha), nil
-}
-
-func (sv SlackVerifier) isValid(body, timestamp, signature string) bool {
-	sig, err := sv.generateSignature(body, timestamp)
-	if err != nil {
-		sv.logger.Error(err.Error())
-		return false
-	}
-	sv.logger.Debug(fmt.Sprintf("slack signature %s", signature))
-	sv.logger.Debug(fmt.Sprintf("generated signature %s", sig))
-	return sig == signature
-}
-
 type findArrivalHandler struct {
 	martaC *marta.Client
 	logger *zap.Logger
-	sv     SlackVerifier
+	sv     slack.Verifier
 	debug  bool
 }
 
@@ -118,7 +87,7 @@ func (th *findArrivalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !th.debug {
-		validatedSignature := th.sv.isValid(
+		validatedSignature := th.sv.IsValid(
 			fmt.Sprintf("%s", rawURL),
 			r.Header.Get("X-Slack-Request-Timestamp"),
 			r.Header.Get("X-Slack-Signature"),
@@ -173,7 +142,7 @@ func buildBlock(train marta.Train) (block Block) {
 		Type: "section",
 		Text: Text{
 			Type: "mrkdwn",
-			Text: fmt.Sprintf("*%s*\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
+			Text: fmt.Sprintf("*:train2:%s:train2:*\\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
 		},
 	}
 }
