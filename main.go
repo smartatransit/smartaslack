@@ -142,7 +142,7 @@ func buildBlock(train marta.Train) (block Block) {
 		Type: "section",
 		Text: Text{
 			Type: "mrkdwn",
-			Text: fmt.Sprintf("*:train2:%s:train2:*\\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
+			Text: fmt.Sprintf("*:train2:%s:train2:*\n%s arriving in %s", train.Station, train.Direction, train.WaitingTime),
 		},
 	}
 }
